@@ -12,6 +12,9 @@
       }
     }
   },
+  "variables": {
+    "extensionTemplateJson": "{\"$schema\":\"https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#\",\"contentVersion\":\"1.0.0.0\",\"parameters\":{\"machineName\":{\"type\":\"string\"},\"location\":{\"type\":\"string\"},\"certSuffixes\":{\"type\":\"string\"},\"vaultName\":{\"type\":\"string\"},\"pollingIntervalInS\":{\"type\":\"string\"}},\"variables\":{\"suffixes\":\"[split(parameters('certSuffixes'), ',')]\",\"secretHost\":\"[toLower(replace(parameters('machineName'), '.', '-'))]\",\"copy\":[{\"name\":\"certs\",\"count\":\"[length(variables('suffixes'))]\",\"input\":{\"url\":\"[concat('https://', parameters('vaultName'), '.vault.azure.net/secrets/', toLower(trim(variables('suffixes')[copyIndex('certs')])), '-', variables('secretHost'))]\",\"certificateStoreName\":\"MY\",\"certificateStoreLocation\":\"LocalMachine\",\"linkOnRenewal\":true}}]},\"resources\":[{\"type\":\"Microsoft.HybridCompute/machines/extensions\",\"apiVersion\":\"2022-03-10\",\"name\":\"[concat(parameters('machineName'), '/KeyVaultForWindows')]\",\"location\":\"[parameters('location')]\",\"properties\":{\"publisher\":\"Microsoft.Azure.KeyVault\",\"type\":\"KeyVaultForWindows\",\"autoUpgradeMinorVersion\":true,\"settings\":{\"secretsManagementSettings\":{\"pollingIntervalInS\":\"[parameters('pollingIntervalInS')]\",\"observedCertificates\":\"[variables('certs')]\"},\"authenticationSettings\":{\"msiEndpoint\":\"http://localhost:40342/metadata/identity/oauth2/token\"}}}}]}"
+  },
   "resources": [
     {
       "type": "Microsoft.Authorization/policyDefinitions",
@@ -111,55 +114,7 @@
                       "value": "[[parameters('pollingIntervalInS')]"
                     }
                   },
-                  "template": {
-                    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-                    "contentVersion": "1.0.0.0",
-                    "parameters": {
-                      "machineName": { "type": "string" },
-                      "location": { "type": "string" },
-                      "certSuffixes": { "type": "string" },
-                      "vaultName": { "type": "string" },
-                      "pollingIntervalInS": { "type": "string" }
-                    },
-                    "variables": {
-                      "suffixes": "[[split(parameters('certSuffixes'), ',')]",
-                      "secretHost": "[[toLower(replace(parameters('machineName'), '.', '-'))]",
-                      "copy": [
-                        {
-                          "name": "certs",
-                          "count": "[[length(variables('suffixes'))]",
-                          "input": {
-                            "url": "[[concat('https://', parameters('vaultName'), '.vault.azure.net/secrets/', toLower(trim(variables('suffixes')[copyIndex('certs')])), '-', variables('secretHost'))]",
-                            "certificateStoreName": "MY",
-                            "certificateStoreLocation": "LocalMachine",
-                            "linkOnRenewal": true
-                          }
-                        }
-                      ]
-                    },
-                    "resources": [
-                      {
-                        "type": "Microsoft.HybridCompute/machines/extensions",
-                        "apiVersion": "2022-03-10",
-                        "name": "[[concat(parameters('machineName'), '/KeyVaultForWindows')]",
-                        "location": "[[parameters('location')]",
-                        "properties": {
-                          "publisher": "Microsoft.Azure.KeyVault",
-                          "type": "KeyVaultForWindows",
-                          "autoUpgradeMinorVersion": true,
-                          "settings": {
-                            "secretsManagementSettings": {
-                              "pollingIntervalInS": "[[parameters('pollingIntervalInS')]",
-                              "observedCertificates": "[[variables('certs')]"
-                            },
-                            "authenticationSettings": {
-                              "msiEndpoint": "http://localhost:40342/metadata/identity/oauth2/token"
-                            }
-                          }
-                        }
-                      }
-                    ]
-                  }
+                  "template": "[json(variables('extensionTemplateJson'))]"
                 }
               }
             }

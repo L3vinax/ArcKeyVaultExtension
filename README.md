@@ -21,6 +21,7 @@ Azure Policy (`DeployIfNotExists`) that installs the **KeyVaultForWindows** exte
 | `policy/keyvault-extension.rules.json` | Policy rule and embedded deployment template |
 | `policy/keyvault-extension.params.json` | Policy parameters (`effect`, `vaultName`, `tagName`, `pollingIntervalInS`) |
 | `scripts/Set-KvCertTags.ps1` | Bulk-set the tag from a CSV |
+| `scripts/Test-DeploymentTemplate.ps1` | Check deployment isolation and parity with the standalone policy |
 | `scripts/machines.sample.csv` | Example CSV |
 
 ## Prerequisites
@@ -82,6 +83,7 @@ az policy remediation create --name kv-ext-remediate-<name> --policy-assignment 
 
 ## Notes
 
-- When changing the policy, keep the rule and parameters in `azuredeploy.json` synchronized with `policy/keyvault-extension.rules.json` and `policy/keyvault-extension.params.json`. Expressions inside the ARM template's policy rule use `[[` instead of `[` so they are preserved for policy evaluation and remediation.
+- When changing the policy, keep the rule and parameters in `azuredeploy.json` synchronized with `policy/keyvault-extension.rules.json` and `policy/keyvault-extension.params.json`. Policy expressions use `[[` instead of `[` to defer evaluation. The remediation template is stored as JSON text in `variables.extensionTemplateJson` and inserted with `json()` so ARM does not process its `copy` loop while creating the policy definition. Expressions inside that JSON text keep their original single `[`.
+- Run `.\scripts\Test-DeploymentTemplate.ps1` after policy changes to check expression isolation and exact rule/parameter parity. This is a local regression check, not Azure service-side validation.
 - Keep `pollingIntervalInS` long (default 3600) to avoid Key Vault throttling: requests scale with certs x machines.
 - If the `osName` alias is rejected, find the correct one with `az provider show --namespace Microsoft.HybridCompute --expand "resourceTypes/aliases"`.
