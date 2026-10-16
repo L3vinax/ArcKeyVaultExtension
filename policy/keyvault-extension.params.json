@@ -1,0 +1,33 @@
+{
+  "effect": {
+    "type": "String",
+    "metadata": {
+      "displayName": "Effect",
+      "description": "DeployIfNotExists installs the extension; AuditIfNotExists only reports."
+    },
+    "allowedValues": [ "DeployIfNotExists", "AuditIfNotExists", "Disabled" ],
+    "defaultValue": "DeployIfNotExists"
+  },
+  "vaultName": {
+    "type": "String",
+    "metadata": {
+      "displayName": "Key Vault name",
+      "description": "Name of the Key Vault (not the full URL), for example kv-ocscerts."
+    }
+  },
+  "tagName": {
+    "type": "String",
+    "metadata": {
+      "displayName": "Tag name",
+      "description": "Tag on the Arc machine holding a comma-separated list of secret prefixes, for example iis,rdp,sql. Machines without this tag are ignored."
+    },
+    "defaultValue": "KvCertSecrets"
+  },
+  "pollingIntervalInS": {
+    "type": "String",
+    "metadata": {
+      "displayName": "Polling interval (seconds)"
+    },
+    "defaultValue": "3600"
+  }
+}

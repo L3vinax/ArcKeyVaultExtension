@@ -1,0 +1,3 @@
+Machine,Suffixes
+web01,iis;rdp;sql
+web02,iis
