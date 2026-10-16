@@ -15,6 +15,7 @@ Azure Policy (`DeployIfNotExists`) that installs the **KeyVaultForWindows** exte
 
 | Path | Purpose |
 |---|---|
+| `azuredeploy.json` | Subscription-level ARM template for the Deploy to Azure button |
 | `policy/keyvault-extension.rules.json` | Policy rule and embedded deployment template |
 | `policy/keyvault-extension.params.json` | Policy parameters (`effect`, `vaultName`, `tagName`, `pollingIntervalInS`) |
 | `scripts/Set-KvCertTags.ps1` | Bulk-set the tag from a CSV |
@@ -27,6 +28,23 @@ Azure Policy (`DeployIfNotExists`) that installs the **KeyVaultForWindows** exte
 3. Tag values are limited to 256 characters.
 
 ## Deploy
+
+[![Deploy to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FL3vinax%2FArcKeyVaultExtension%2Fmain%2Fazuredeploy.json)
+
+### Azure portal
+
+1. Select **Deploy to Azure**, sign in, and choose the subscription and deployment location. The location stores deployment metadata; the policy definition is subscription-wide.
+2. Keep the default policy definition name (`kv-ext-arc-windows`) or choose another name, then select **Review + create** and **Create**. Reusing an existing name updates that definition.
+3. After deployment, assign the definition using step 2 below or **Azure Policy > Definitions > Assign policy**. Supply `vaultName`, choose the assignment scope, and enable a system-assigned managed identity with the **Azure Connected Machine Resource Administrator** role at that scope.
+4. Tag machines and create a remediation task for existing machines (steps 3 and 4 below).
+
+The button creates **only the policy definition**, not an assignment, managed identity, role assignment, Key Vault, or certificates. You need subscription-level `Microsoft.Authorization/policyDefinitions/write` and `Microsoft.Resources/deployments/*` permissions (for example, **Resource Policy Contributor**). Machines still need the Key Vault access described in the prerequisites.
+
+The button requires `azuredeploy.json` to be published on this repository's `main` branch and publicly accessible. If you fork the repository, update the button's template URL.
+
+### Azure CLI
+
+Skip step 1 if you already deployed the definition with the button. If you chose a different definition name, use it in `--policy` in step 2.
 
 ```powershell
 # 1. Definition
@@ -62,5 +80,6 @@ az policy remediation create --name kv-ext-remediate-<name> --policy-assignment 
 
 ## Notes
 
+- When changing the policy, keep the rule and parameters in `azuredeploy.json` synchronized with `policy/keyvault-extension.rules.json` and `policy/keyvault-extension.params.json`. Expressions inside the ARM template's policy rule use `[[` instead of `[` so they are preserved for policy evaluation and remediation.
 - Keep `pollingIntervalInS` long (default 3600) to avoid Key Vault throttling: requests scale with certs x machines.
 - If the `osName` alias is rejected, find the correct one with `az provider show --namespace Microsoft.HybridCompute --expand "resourceTypes/aliases"`.
