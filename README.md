@@ -1,4 +1,6 @@
-# Arc Key Vault certificate policy
+# Arc Key Vault certificate policy (Preview)
+
+> **In development:** This project is in preview. Validate it in a non-production environment before production use.
 
 Azure Policy (`DeployIfNotExists`) that installs the **KeyVaultForWindows** extension on Azure Arc-enabled Windows servers and configures it to monitor several certificates per machine.
 
