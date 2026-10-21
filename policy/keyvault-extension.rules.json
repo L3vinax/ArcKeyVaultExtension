@@ -31,6 +31,10 @@
           {
             "field": "Microsoft.HybridCompute/machines/extensions/publisher",
             "equals": "Microsoft.Azure.KeyVault"
+          },
+          {
+            "field": "Microsoft.HybridCompute/machines/extensions/forceUpdateTag",
+            "equals": "[field(concat('tags[', parameters('tagName'), ']'))]"
           }
         ]
       },
@@ -89,6 +93,7 @@
                 "properties": {
                   "publisher": "Microsoft.Azure.KeyVault",
                   "type": "KeyVaultForWindows",
+                  "forceUpdateTag": "[parameters('certSuffixes')]",
                   "autoUpgradeMinorVersion": true,
                   "settings": {
                     "secretsManagementSettings": {

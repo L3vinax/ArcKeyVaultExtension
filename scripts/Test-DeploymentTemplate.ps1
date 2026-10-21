@@ -49,4 +49,23 @@ if ($embeddedParameters -cne $originalParameters) {
     throw 'The deployed policy parameters do not match the standalone policy parameters.'
 }
 
-Write-Output 'PASS: subscription scope, definition-only deployment, isolated copy loop, escaped expressions, and exact policy rule/parameter parity.'
+$tagValueExpression = "[field(concat('tags[', parameters('tagName'), ']'))]"
+$tagChecks = @($rule.then.details.existenceCondition.allOf | Where-Object {
+    $_.field -ceq 'Microsoft.HybridCompute/machines/extensions/forceUpdateTag'
+})
+if ($tagChecks.Count -ne 1 -or $tagChecks[0].equals -cne $tagValueExpression) {
+    throw 'Extension compliance must compare forceUpdateTag with the parent machine certificate tag.'
+}
+
+$remediation = $rule.then.details.deployment.properties
+if ($remediation.parameters.certSuffixes.value -cne $tagValueExpression) {
+    throw 'Remediation must receive the same certificate tag value used by the compliance check.'
+}
+$extensions = @($remediation.template.resources | Where-Object {
+    $_.type -ceq 'Microsoft.HybridCompute/machines/extensions'
+})
+if ($extensions.Count -ne 1 -or $extensions[0].properties.forceUpdateTag -cne "[parameters('certSuffixes')]") {
+    throw 'Remediation must stamp the certificate tag value into extension forceUpdateTag.'
+}
+
+Write-Output 'PASS: subscription scope, definition-only deployment, isolated copy loop, escaped expressions, exact policy rule/parameter parity, and tag-change detection wiring.'

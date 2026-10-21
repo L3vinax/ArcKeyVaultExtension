@@ -12,6 +12,7 @@ Azure Policy (`DeployIfNotExists`) that installs the **KeyVaultForWindows** exte
 - Machines without the tag are ignored. Non-Windows machines are ignored.
 - Certificates are installed in `LocalMachine\MY` with `linkOnRenewal` enabled.
 - Only one `KeyVaultForWindows` extension can exist per machine, so all certs share one `observedCertificates` array.
+- The extension's `forceUpdateTag` property records the applied certificate tag value. A different or missing value makes the extension non-compliant, allowing policy to redeploy it with the current list without deleting it.
 
 ## Layout
 
@@ -74,16 +75,26 @@ az policy remediation create --name kv-ext-remediate --policy-assignment kv-ext-
 
 ## Changing a machine's certificate list
 
-The policy's existence check only tests that the extension exists, not its settings. After changing a tag on a machine that already has the extension, delete the extension and re-run remediation, or update it directly:
+Change the machine's certificate tag to the new comma-separated prefix list. The policy compares it with the extension's `properties.forceUpdateTag` and updates the existing extension when they differ. This property is an extension handler update marker, not an Azure resource tag. An unchanged value remains compliant.
+
+For qualifying resource create/update requests, `DeployIfNotExists` evaluates after the default 10-minute delay; updates are not immediate. Tag-only PATCH requests are eligible because this policy inspects tags. Verify the actual update path used by your tooling, including `Set-KvCertTags.ps1`, in a non-production environment.
+
+After upgrading an existing policy definition, run remediation once to stamp existing extensions. Compliance scans (scheduled or manually triggered) only report non-compliance; they do not redeploy existing resources automatically. To repair those resources without deleting the extension, create a remediation task with fresh discovery:
 
 ```powershell
-az connectedmachine extension delete --machine-name <name> -g <rg> --name KeyVaultForWindows -y
-az policy remediation create --name kv-ext-remediate-<name> --policy-assignment kv-ext-arc-windows -g <rg>
+az policy remediation create --name kv-ext-tag-update --policy-assignment kv-ext-arc-windows `
+  -g <rg> --resource-discovery-mode ReEvaluateCompliance
 ```
+
+Use a new remediation task name for subsequent runs. With `AuditIfNotExists`, changes are reported but not deployed.
+
+Removing the machine's tag makes it out of scope; it does not uninstall the extension or remove installed certificates. Removing a prefix stops observing that secret after the extension update, but does not guarantee removal of certificates already installed. This check tracks the raw certificate tag value, not arbitrary extension-settings drift or changes to assignment parameters such as `vaultName` and `pollingIntervalInS`.
+
+Before production use, verify in Azure that a changed tag redeploys the extension with the new `observedCertificates`, the applied marker matches the tag, and an unchanged tag remains compliant. Also verify migration from an extension without a marker and that machines without the tag remain out of scope.
 
 ## Notes
 
 - When changing the policy, keep the rule and parameters in `azuredeploy.json` synchronized with `policy/keyvault-extension.rules.json` and `policy/keyvault-extension.params.json`. Policy expressions use `[[` instead of `[` to defer evaluation. The remediation template is stored as JSON text in `variables.extensionTemplateJson` and inserted with `json()` so ARM does not process its `copy` loop while creating the policy definition. Expressions inside that JSON text keep their original single `[`.
-- Run `.\scripts\Test-DeploymentTemplate.ps1` after policy changes to check expression isolation and exact rule/parameter parity. This is a local regression check, not Azure service-side validation.
+- Run `.\scripts\Test-DeploymentTemplate.ps1` after policy changes to check expression isolation, exact rule/parameter parity, and tag-change detection wiring. This is a local regression check, not Azure service-side validation.
 - Keep `pollingIntervalInS` long (default 3600) to avoid Key Vault throttling: requests scale with certs x machines.
 - If the `osName` alias is rejected, find the correct one with `az provider show --namespace Microsoft.HybridCompute --expand "resourceTypes/aliases"`.
