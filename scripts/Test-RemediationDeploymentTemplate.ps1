@@ -46,7 +46,9 @@ $package = $accountResources | Where-Object { $_.type -ceq 'Microsoft.Automation
 $runbook = $accountResources | Where-Object { $_.type -ceq 'Microsoft.Automation/automationAccounts/runbooks' }
 Assert-True ($accountResources.Count -eq 4 -and $null -ne $account -and $null -ne $runtime -and $null -ne $package -and $null -ne $runbook) 'Account deployment must contain only account, runtime, attached package, and runbook.'
 Assert-True ($account.identity.type -ceq 'SystemAssigned' -and $account.properties.sku.name -ceq 'Basic') 'Automation must use a system-assigned identity and Basic SKU.'
-Assert-True ($accountDeployment.properties.parameters.location.value -ceq "[parameters('automationLocation')]") 'Use the Automation location, not the subscription deployment location.'
+Assert-True (-not $template.parameters.PSObject.Properties['automationLocation']) 'Use the portal Region selector instead of a separate Automation location field.'
+Assert-True ($accountDeployment.properties.parameters.location.value -ceq '[deployment().location]') 'Use the selected subscription deployment region for Automation.'
+Assert-True ($account.location -ceq "[parameters('location')]") 'Create the account in the region passed into the nested deployment.'
 Assert-True ($runtime.name -ceq "[concat(parameters('accountName'), '/KvCertRemediation-PowerShell74')]" -and $runtime.apiVersion -ceq '2024-10-23') 'Create the named runtime with a supported API.'
 Assert-True ($runtime.properties.runtime.language -ceq 'PowerShell' -and $runtime.properties.runtime.version -ceq '7.4') 'Runtime must be PowerShell 7.4.'
 Assert-True ($runtime.location -ceq "[parameters('location')]" -and $package.location -ceq "[parameters('location')]") 'Runtime and attached package need the account location.'
@@ -88,8 +90,7 @@ foreach ($expected in $expectedRoles) {
     Assert-True ($role[0].dependsOn -contains $accountDeploymentId) 'Roles must wait for the resource-group account deployment.'
     $expectedName = "[guid(variables('$($expected.Scope)'), variables('automationAccountId'), variables('$($expected.Role)'))]"
     Assert-True ($role[0].name -ceq $expectedName) 'Role names must be deterministic.'
-    $roleId = "[extensionResourceId(variables('$($expected.Scope)'), 'Microsoft.Authorization/roleAssignments', guid(variables('$($expected.Scope)'), variables('automationAccountId'), variables('$($expected.Role)')))]"
-    Assert-True ($scheduleDeployment.dependsOn -contains $roleId) 'Scheduling must wait for each scoped role assignment.'
+    Assert-True ($scheduleDeployment.dependsOn -contains $role[0].name) 'Scheduling must reference each scoped role assignment by its declared resource name, not a reconstructed scoped ID.'
 }
 Assert-True ($scheduleDeployment.dependsOn.Count -eq 3 -and $scheduleDeployment.dependsOn -contains $accountDeploymentId) 'Scheduling must wait for the runbook and both grants.'
 
@@ -116,4 +117,4 @@ foreach ($name in $expectedParameters.Keys) {
 
 $templateUri = [Uri]::EscapeDataString('https://raw.githubusercontent.com/L3vinax/ArcKeyVaultExtension/main/azuredeploy-remediation.json')
 Assert-True ($readme.Contains("https://portal.azure.com/#create/Microsoft.Template/uri/$templateUri")) 'README button must reference the Automation template on main.'
-Write-Output 'PASS: Automation-only deployment, subscription-safe resource IDs, scoped identity permissions, PowerShell 7.4 runtime and attached Az.Accounts package, explicit runbook binding, hourly schedule ordering and parameters, stable resource names, and portal button URL.'
+Write-Output 'PASS: Automation-only deployment, subscription-safe resource IDs, declared-name role dependencies, scoped identity permissions, PowerShell 7.4 runtime and attached Az.Accounts package, explicit runbook binding, hourly schedule ordering and parameters, stable resource names, and portal button URL.'

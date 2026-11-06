@@ -13,13 +13,6 @@
       "maxLength": 50,
       "metadata": { "description": "Name of a NEW, dedicated Automation account. Do not reuse an account deployed for another assignment or target group." }
     },
-    "automationLocation": {
-      "type": "string",
-      "metadata": {
-        "description": "Azure region supporting Azure Automation, for example eastus. This is separate from the subscription deployment metadata location.",
-        "strongType": "location"
-      }
-    },
     "targetResourceGroupName": {
       "type": "string",
       "minLength": 1,
@@ -58,7 +51,7 @@
         "expressionEvaluationOptions": { "scope": "inner" },
         "parameters": {
           "accountName": { "value": "[parameters('automationAccountName')]" },
-          "location": { "value": "[parameters('automationLocation')]" },
+          "location": { "value": "[deployment().location]" },
           "runbookContentUri": { "value": "[parameters('runbookContentUri')]" }
         },
         "template": {
@@ -155,8 +148,8 @@
       "resourceGroup": "[parameters('automationResourceGroupName')]",
       "dependsOn": [
         "[variables('automationDeploymentId')]",
-        "[extensionResourceId(variables('targetScope'), 'Microsoft.Authorization/roleAssignments', guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId')))]",
-        "[extensionResourceId(variables('policyAssignmentId'), 'Microsoft.Authorization/roleAssignments', guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId')))]"
+        "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]",
+        "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]"
       ],
       "properties": {
         "mode": "Incremental",
