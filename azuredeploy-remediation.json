@@ -36,6 +36,10 @@
     "policyAssignmentId": "[parameters('policyAssignmentId')]",
     "automationDeploymentName": "[concat('kv-cert-account-', uniqueString(variables('automationAccountId')))]",
     "automationDeploymentId": "[extensionResourceId(variables('automationResourceGroupId'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]",
+    "permissionsDeploymentName": "[concat('kv-cert-permissions-', uniqueString(variables('automationAccountId')))]",
+    "permissionsDeploymentId": "[extensionResourceId(variables('targetScope'), 'Microsoft.Resources/deployments', variables('permissionsDeploymentName'))]",
+    "assignmentAtSubscription": "[equals(toLower(variables('policyAssignmentId')), toLower(subscriptionResourceId('Microsoft.Authorization/policyAssignments', last(split(variables('policyAssignmentId'), '/')))))]",
+    "assignmentRelativeScope": "[concat('Microsoft.Authorization/policyAssignments/', last(split(variables('policyAssignmentId'), '/')))]",
     "scheduleDeploymentName": "[concat('kv-cert-schedule-', uniqueString(variables('automationAccountId')))]",
     "policyContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '36243c78-bf99-498c-9df9-86d9f8d28608')]",
     "readerRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]"
@@ -118,22 +122,68 @@
       }
     },
     {
-      "type": "Microsoft.Authorization/roleAssignments",
-      "apiVersion": "2022-04-01",
-      "name": "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]",
-      "scope": "[variables('targetScope')]",
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('permissionsDeploymentName')]",
+      "resourceGroup": "[parameters('targetResourceGroupName')]",
       "dependsOn": [ "[variables('automationDeploymentId')]" ],
       "properties": {
-        "principalId": "[reference(variables('automationDeploymentId'), '2022-09-01').outputs.principalId.value]",
-        "principalType": "ServicePrincipal",
-        "roleDefinitionId": "[variables('policyContributorRoleId')]"
+        "mode": "Incremental",
+        "expressionEvaluationOptions": { "scope": "inner" },
+        "parameters": {
+          "principalId": { "value": "[reference(variables('automationDeploymentId'), '2022-09-01').outputs.principalId.value]" },
+          "contributorRoleId": { "value": "[variables('policyContributorRoleId')]" },
+          "readerRoleId": { "value": "[variables('readerRoleId')]" },
+          "contributorAssignmentName": { "value": "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]" },
+          "readerAssignmentName": { "value": "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]" },
+          "policyAssignmentId": { "value": "[variables('policyAssignmentId')]" },
+          "assignmentRelativeScope": { "value": "[variables('assignmentRelativeScope')]" }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "principalId": { "type": "string" },
+            "contributorRoleId": { "type": "string" },
+            "readerRoleId": { "type": "string" },
+            "contributorAssignmentName": { "type": "string" },
+            "readerAssignmentName": { "type": "string" },
+            "policyAssignmentId": { "type": "string" },
+            "assignmentRelativeScope": { "type": "string" }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[parameters('contributorAssignmentName')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[parameters('contributorRoleId')]"
+              }
+            },
+            {
+              "condition": "[equals(toLower(parameters('policyAssignmentId')), toLower(resourceId('Microsoft.Authorization/policyAssignments', last(split(parameters('policyAssignmentId'), '/')))))]",
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "name": "[parameters('readerAssignmentName')]",
+              "scope": "[parameters('assignmentRelativeScope')]",
+              "properties": {
+                "principalId": "[parameters('principalId')]",
+                "principalType": "ServicePrincipal",
+                "roleDefinitionId": "[parameters('readerRoleId')]"
+              }
+            }
+          ]
+        }
       }
     },
     {
+      "condition": "[variables('assignmentAtSubscription')]",
       "type": "Microsoft.Authorization/roleAssignments",
       "apiVersion": "2022-04-01",
       "name": "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]",
-      "scope": "[variables('policyAssignmentId')]",
+      "scope": "[variables('assignmentRelativeScope')]",
       "dependsOn": [ "[variables('automationDeploymentId')]" ],
       "properties": {
         "principalId": "[reference(variables('automationDeploymentId'), '2022-09-01').outputs.principalId.value]",
@@ -148,7 +198,7 @@
       "resourceGroup": "[parameters('automationResourceGroupName')]",
       "dependsOn": [
         "[variables('automationDeploymentId')]",
-        "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]",
+        "[variables('permissionsDeploymentId')]",
         "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]"
       ],
       "properties": {
