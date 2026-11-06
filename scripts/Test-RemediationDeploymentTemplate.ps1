@@ -14,17 +14,19 @@ function Assert-True {
 
 Assert-True ($template.'$schema' -ceq 'https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#') 'Automation deployment must use subscription scope.'
 $deployments = @($template.resources | Where-Object { $_.type -ceq 'Microsoft.Resources/deployments' })
-$roles = @($template.resources | Where-Object { $_.type -ceq 'Microsoft.Authorization/roleAssignments' })
-Assert-True ($template.resources.Count -eq 4 -and $deployments.Count -eq 3 -and $roles.Count -eq 1) 'Only account, target-group permissions, scheduling deployments, and a conditional subscription-assignment Reader grant may be created.'
+Assert-True ($template.resources.Count -eq 4 -and $deployments.Count -eq 4) 'Only account, target-group permissions, conditional subscription-assignment Reader, and scheduling deployments may be created.'
 
 $accountDeployment = $deployments | Where-Object { $_.name -ceq "[variables('automationDeploymentName')]" }
 $scheduleDeployment = $deployments | Where-Object { $_.name -ceq "[variables('scheduleDeploymentName')]" }
 $permissionsDeployment = $deployments | Where-Object { $_.name -ceq "[variables('permissionsDeploymentName')]" }
-Assert-True ($null -ne $accountDeployment -and $null -ne $scheduleDeployment -and $null -ne $permissionsDeployment) 'Account, permissions, and scheduling deployments must be separate.'
+$subscriptionPermissionsDeployment = $deployments | Where-Object { $_.name -ceq "[variables('subscriptionPermissionsDeploymentName')]" }
+Assert-True ($null -ne $accountDeployment -and $null -ne $scheduleDeployment -and $null -ne $permissionsDeployment -and $null -ne $subscriptionPermissionsDeployment) 'Account, permissions, subscription Reader, and scheduling deployments must be separate.'
 foreach ($deployment in $deployments) {
     Assert-True ($deployment.properties.mode -ceq 'Incremental') 'Nested deployments must preserve unrelated resources.'
     Assert-True ($deployment.properties.expressionEvaluationOptions.scope -ceq 'inner') 'Nested parameters and resource IDs must evaluate in their own scope.'
-    Assert-True ($deployment.properties.template.'$schema' -ceq 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#') 'Nested deployments must use resource-group scope.'
+}
+foreach ($deployment in @($accountDeployment, $permissionsDeployment, $scheduleDeployment)) {
+    Assert-True ($deployment.properties.template.'$schema' -ceq 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#') 'Account, target-group permissions, and scheduling templates must use resource-group scope.'
 }
 foreach ($deployment in @($accountDeployment, $scheduleDeployment)) {
     Assert-True ($deployment.resourceGroup -ceq "[parameters('automationResourceGroupName')]") 'Account and scheduling must deploy to the existing Automation resource group.'
@@ -88,15 +90,14 @@ $permissionParameters = $permissionsDeployment.properties.parameters
 Assert-True ($permissionParameters.principalId.value -ceq $principalExpression) 'Pass the new Automation principal into the permissions deployment.'
 Assert-True ($permissionParameters.policyAssignmentId.value -ceq "[variables('policyAssignmentId')]") 'Use the supplied full assignment ID to select the Reader placement.'
 Assert-True ($permissionParameters.contributorRoleId.value -ceq "[variables('policyContributorRoleId')]" -and $permissionParameters.readerRoleId.value -ceq "[variables('readerRoleId')]") 'Use the existing built-in role definitions.'
-Assert-True ($permissionParameters.contributorAssignmentName.value -ceq "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]") 'Preserve the target-group role assignment name.'
-Assert-True ($permissionParameters.readerAssignmentName.value -ceq "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]") 'Preserve the assignment-scoped Reader name.'
+Assert-True (-not $permissionParameters.PSObject.Properties['contributorAssignmentName'] -and -not $permissionParameters.PSObject.Properties['readerAssignmentName']) 'Do not pass legacy account-resource-ID-based role assignment names into the permissions deployment.'
 Assert-True ($template.variables.assignmentRelativeScope -ceq "[concat('Microsoft.Authorization/policyAssignments/', last(split(variables('policyAssignmentId'), '/')))]") 'ARM scope must be relative to the deployment, not a full /subscriptions resource ID.'
 Assert-True ($permissionParameters.assignmentRelativeScope.value -ceq "[variables('assignmentRelativeScope')]") 'Pass the relative assignment scope into the target-group deployment.'
 Assert-True ($template.variables.assignmentAtSubscription -ceq "[equals(toLower(variables('policyAssignmentId')), toLower(subscriptionResourceId('Microsoft.Authorization/policyAssignments', last(split(variables('policyAssignmentId'), '/')))))]") 'Only a matching subscription assignment may receive the outer Reader grant.'
 
 $permissionResources = $permissionsDeployment.properties.template.resources
-$contributor = @($permissionResources | Where-Object { $_.name -ceq "[parameters('contributorAssignmentName')]" })
-$groupReader = @($permissionResources | Where-Object { $_.name -ceq "[parameters('readerAssignmentName')]" })
+$contributor = @($permissionResources | Where-Object { $_.properties.roleDefinitionId -ceq "[parameters('contributorRoleId')]" })
+$groupReader = @($permissionResources | Where-Object { $_.properties.roleDefinitionId -ceq "[parameters('readerRoleId')]" })
 Assert-True ($permissionResources.Count -eq 2 -and $contributor.Count -eq 1 -and $groupReader.Count -eq 1) 'Target-group permissions deployment must contain only the contributor and conditional assignment Reader grants.'
 foreach ($role in $permissionResources) {
     Assert-True ($role.type -ceq 'Microsoft.Authorization/roleAssignments' -and $role.apiVersion -ceq '2022-04-01') 'Deploy only stable RBAC role assignment resources.'
@@ -104,15 +105,25 @@ foreach ($role in $permissionResources) {
 }
 Assert-True (-not $contributor[0].PSObject.Properties['scope'] -and -not $contributor[0].PSObject.Properties['condition']) 'Contributor must inherit the target resource-group deployment scope, never subscription scope.'
 Assert-True ($contributor[0].properties.roleDefinitionId -ceq "[parameters('contributorRoleId')]") 'Resource Policy Contributor must be granted at the target group.'
+Assert-True ($contributor[0].name -ceq "[guid(toLower(resourceGroup().id), toLower(parameters('principalId')), toLower(parameters('contributorRoleId')))]") 'Contributor names must use the actual principal ID, scope, and role so account recreation cannot reuse an old identity grant.'
 Assert-True ($groupReader[0].condition -ceq "[equals(toLower(parameters('policyAssignmentId')), toLower(resourceId('Microsoft.Authorization/policyAssignments', last(split(parameters('policyAssignmentId'), '/')))))]") 'Only an assignment in this target group may receive the inner Reader grant.'
 Assert-True ($groupReader[0].scope -ceq "[parameters('assignmentRelativeScope')]" -and $groupReader[0].properties.roleDefinitionId -ceq "[parameters('readerRoleId')]") 'Group Reader must apply only to the relative policy assignment resource.'
 
-$subscriptionReader = $roles[0]
-Assert-True ($subscriptionReader.condition -ceq "[variables('assignmentAtSubscription')]" -and $subscriptionReader.scope -ceq "[variables('assignmentRelativeScope')]") 'Subscription assignment Reader must be conditional and use a relative assignment scope.'
-Assert-True ($subscriptionReader.properties.roleDefinitionId -ceq "[variables('readerRoleId')]" -and $subscriptionReader.properties.principalId -ceq $principalExpression -and $subscriptionReader.properties.principalType -ceq 'ServicePrincipal') 'Subscription assignment Reader must use the Automation principal without granting subscription-wide Reader.'
-Assert-True ($subscriptionReader.name -ceq $permissionParameters.readerAssignmentName.value) 'Both Reader placements must preserve the same deterministic assignment name.'
-Assert-True ($subscriptionReader.dependsOn -contains $accountDeploymentId) 'Subscription assignment Reader must wait for the Automation identity.'
-Assert-True ($scheduleDeployment.dependsOn.Count -eq 3 -and $scheduleDeployment.dependsOn -contains $accountDeploymentId -and $scheduleDeployment.dependsOn -contains "[variables('permissionsDeploymentId')]" -and $scheduleDeployment.dependsOn -contains $subscriptionReader.name) 'Scheduling must wait for the runbook, target-group permissions, and conditional subscription assignment Reader.'
+Assert-True ($subscriptionPermissionsDeployment.condition -ceq "[variables('assignmentAtSubscription')]") 'Create the subscription Reader deployment only for a matching subscription assignment.'
+Assert-True ($subscriptionPermissionsDeployment.subscriptionId -ceq '[subscription().subscriptionId]' -and $subscriptionPermissionsDeployment.location -ceq '[deployment().location]' -and -not $subscriptionPermissionsDeployment.PSObject.Properties['resourceGroup']) 'Reader deployment must target the current subscription with a deployment metadata location.'
+Assert-True ($subscriptionPermissionsDeployment.properties.template.'$schema' -ceq 'https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#') 'Subscription assignment Reader must use a subscription-scoped nested template.'
+Assert-True ($template.variables.subscriptionPermissionsDeploymentId -ceq "[subscriptionResourceId('Microsoft.Resources/deployments', variables('subscriptionPermissionsDeploymentName'))]") 'Resolve the Reader deployment at subscription scope.'
+Assert-True ($subscriptionPermissionsDeployment.dependsOn -contains $accountDeploymentId) 'Subscription Reader deployment must wait for the Automation identity.'
+$readerParameters = $subscriptionPermissionsDeployment.properties.parameters
+Assert-True ($readerParameters.principalId.value -ceq $principalExpression -and $readerParameters.readerRoleId.value -ceq "[variables('readerRoleId')]" -and $readerParameters.policyAssignmentId.value -ceq "[variables('policyAssignmentId')]" -and $readerParameters.assignmentRelativeScope.value -ceq "[variables('assignmentRelativeScope')]") 'Pass the actual principal, role, assignment ID, and relative scope as nested deployment inputs before evaluating the grant name.'
+$subscriptionReaderResources = @($subscriptionPermissionsDeployment.properties.template.resources)
+Assert-True ($subscriptionReaderResources.Count -eq 1) 'Subscription Reader deployment must create only the assignment-scoped Reader grant.'
+$subscriptionReader = $subscriptionReaderResources[0]
+Assert-True ($subscriptionReader.type -ceq 'Microsoft.Authorization/roleAssignments' -and $subscriptionReader.apiVersion -ceq '2022-04-01' -and $subscriptionReader.scope -ceq "[parameters('assignmentRelativeScope')]") 'Subscription Reader must use a stable RBAC API and relative assignment scope.'
+Assert-True ($subscriptionReader.properties.roleDefinitionId -ceq "[parameters('readerRoleId')]" -and $subscriptionReader.properties.principalId -ceq "[parameters('principalId')]" -and $subscriptionReader.properties.principalType -ceq 'ServicePrincipal') 'Subscription Reader must use the Automation principal without granting subscription-wide Reader.'
+$readerNameExpression = "[guid(toLower(parameters('policyAssignmentId')), toLower(parameters('principalId')), toLower(parameters('readerRoleId')))]"
+Assert-True ($subscriptionReader.name -ceq $readerNameExpression -and $groupReader[0].name -ceq $readerNameExpression) 'Both Reader placements must derive their names from the actual principal ID, full assignment scope, and role, not the reusable account resource ID.'
+Assert-True ($scheduleDeployment.dependsOn.Count -eq 3 -and $scheduleDeployment.dependsOn -contains $accountDeploymentId -and $scheduleDeployment.dependsOn -contains "[variables('permissionsDeploymentId')]" -and $scheduleDeployment.dependsOn -contains "[variables('subscriptionPermissionsDeploymentId')]") 'Scheduling must wait for the runbook and both permissions deployments.'
 
 $scheduleTemplate = $scheduleDeployment.properties.template
 $schedule = $scheduleTemplate.resources | Where-Object { $_.type -ceq 'Microsoft.Automation/automationAccounts/schedules' }

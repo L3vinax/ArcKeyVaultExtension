@@ -129,7 +129,7 @@ function Invoke-AzRestMethod {
             $values = @($script:roleAssignments | Where-Object { $_.Scope -ieq $roleScope } | ForEach-Object {
                 @{ properties = @{
                     scope = $_.Scope
-                    principalId = 'test-principal'
+                    principalId = $(if ($_.PrincipalId) { $_.PrincipalId } else { 'test-principal' })
                     roleDefinitionId = "/subscriptions/$subscription/providers/Microsoft.Authorization/roleDefinitions/$($_.RoleDefinitionId)"
                 } }
             })
@@ -145,6 +145,7 @@ function Invoke-AzRestMethod {
         $script:roleAssignments += [pscustomobject] @{
             Scope = ($Path -split '(?i)/providers/Microsoft.Authorization/roleAssignments')[0]
             RoleDefinitionId = ($body.properties.roleDefinitionId -split '/')[-1]
+            PrincipalId = $body.properties.principalId
         }
         return [pscustomobject] @{ StatusCode = 201; Content = '{}' }
     }
@@ -427,6 +428,22 @@ Test-Case 'RBAC write error fails deployment explicitly before publishing or sch
     $script:roleWriteStatus = 403
     Assert-Throws { Invoke-TestDeployment } 'Cannot grant role.*403.*Role assignment denied'
     Assert-True ($script:publishedRunbooks -eq 0 -and $script:createdSchedules -eq 0) 'Do not publish or schedule after a failed grant.'
+}
+
+Test-Case 'Recovery reuses current Contributor and replaces only a missing Reader grant for a recreated identity' {
+    Reset-Deployment
+    $script:roleAssignments = @(
+        [pscustomobject] @{ Scope = $scope; RoleDefinitionId = '36243c78-bf99-498c-9df9-86d9f8d28608'; PrincipalId = 'test-principal' },
+        [pscustomobject] @{ Scope = $deploymentParameters.PolicyAssignmentId; RoleDefinitionId = 'acdd72a7-3385-48ef-bd42-f606fba81ae7'; PrincipalId = 'deleted-account-principal' }
+    )
+    Invoke-TestDeployment | Out-Null
+    $writes = @($script:requests | Where-Object { $_.Method -eq 'PUT' -and $_.Path -match '/providers/Microsoft.Authorization/roleAssignments/' })
+    Assert-True ($writes.Count -eq 1 -and $writes[0].Path.StartsWith("$($deploymentParameters.PolicyAssignmentId)/providers/Microsoft.Authorization/roleAssignments/")) 'Create only the missing Reader grant at the assignment resource.'
+    Assert-True ($script:roleAssignments.Count -eq 3 -and $script:roleAssignments[1].PrincipalId -ceq 'deleted-account-principal') 'Keep existing grants untouched; do not mutate a stale identity grant.'
+    Assert-True ($script:publishedRunbooks -eq 1 -and $script:links.Count -eq 1) 'Finish publishing and scheduling after reconciling grants.'
+    Invoke-TestDeployment | Out-Null
+    $writes = @($script:requests | Where-Object { $_.Method -eq 'PUT' -and $_.Path -match '/providers/Microsoft.Authorization/roleAssignments/' })
+    Assert-True ($writes.Count -eq 0 -and $script:roleAssignments.Count -eq 3) 'A second recovery run must reuse both current-identity grants.'
 }
 
 Test-Case 'Package import is polled until the attached package succeeds' {
