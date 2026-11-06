@@ -27,6 +27,18 @@ foreach ($deployment in $deployments) {
     Assert-True ($deployment.properties.template.'$schema' -ceq 'https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#') 'Nested deployments must use resource-group scope.'
 }
 
+Assert-True ($template.variables.automationResourceGroupId -ceq "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('automationResourceGroupName'))]") 'Build the Automation resource-group ID at subscription scope.'
+Assert-True ($template.variables.automationAccountId -ceq "[extensionResourceId(variables('automationResourceGroupId'), 'Microsoft.Automation/automationAccounts', parameters('automationAccountName'))]") 'Build the account ID under its resource group without subscription-scope resourceId overloads.'
+Assert-True ($template.variables.automationDeploymentId -ceq "[extensionResourceId(variables('automationResourceGroupId'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]") 'Build the nested deployment ID under its resource group.'
+
+# resourceId uses subscription semantics outside the inner resource-group templates.
+$outerTemplate = $template | ConvertTo-Json -Depth 100 | ConvertFrom-Json
+foreach ($resource in $outerTemplate.resources | Where-Object { $_.type -ceq 'Microsoft.Resources/deployments' }) {
+    $resource.properties.template = $null
+}
+$outerJson = $outerTemplate | ConvertTo-Json -Depth 100 -Compress
+Assert-True ($outerJson -notmatch '(?i)(?<![a-z])resourceId\s*\(') 'Do not use resourceId in subscription-scope expressions; a resource-group name can be interpreted as a subscription ID.'
+
 $accountResources = $accountDeployment.properties.template.resources
 $account = $accountResources | Where-Object { $_.type -ceq 'Microsoft.Automation/automationAccounts' }
 $runtime = $accountResources | Where-Object { $_.type -ceq 'Microsoft.Automation/automationAccounts/runtimeEnvironments' }
@@ -62,8 +74,8 @@ Assert-True ($template.outputs.policyAssignmentId.value -ceq "[variables('policy
 Assert-True ($template.variables.targetScope -ceq "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('targetResourceGroupName'))]") 'Target role must be scoped to the selected resource group.'
 Assert-True ($template.variables.policyContributorRoleId -ceq "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '36243c78-bf99-498c-9df9-86d9f8d28608')]") 'Grant Resource Policy Contributor, matching the script.'
 Assert-True ($template.variables.readerRoleId -ceq "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]") 'Grant Reader, matching the script.'
-$accountDeploymentId = "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]"
-$principalExpression = "[reference(resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName')), '2022-09-01').outputs.principalId.value]"
+$accountDeploymentId = "[variables('automationDeploymentId')]"
+$principalExpression = "[reference(variables('automationDeploymentId'), '2022-09-01').outputs.principalId.value]"
 $expectedRoles = @(
     @{ Scope = 'targetScope'; Role = 'policyContributorRoleId' },
     @{ Scope = 'policyAssignmentId'; Role = 'readerRoleId' }
@@ -104,4 +116,4 @@ foreach ($name in $expectedParameters.Keys) {
 
 $templateUri = [Uri]::EscapeDataString('https://raw.githubusercontent.com/L3vinax/ArcKeyVaultExtension/main/azuredeploy-remediation.json')
 Assert-True ($readme.Contains("https://portal.azure.com/#create/Microsoft.Template/uri/$templateUri")) 'README button must reference the Automation template on main.'
-Write-Output 'PASS: Automation-only deployment, scoped identity permissions, PowerShell 7.4 runtime and attached Az.Accounts package, explicit runbook binding, hourly schedule ordering and parameters, stable resource names, and portal button URL.'
+Write-Output 'PASS: Automation-only deployment, subscription-safe resource IDs, scoped identity permissions, PowerShell 7.4 runtime and attached Az.Accounts package, explicit runbook binding, hourly schedule ordering and parameters, stable resource names, and portal button URL.'

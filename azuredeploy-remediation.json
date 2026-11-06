@@ -37,10 +37,12 @@
     }
   },
   "variables": {
-    "automationAccountId": "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Automation/automationAccounts', parameters('automationAccountName'))]",
+    "automationResourceGroupId": "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('automationResourceGroupName'))]",
+    "automationAccountId": "[extensionResourceId(variables('automationResourceGroupId'), 'Microsoft.Automation/automationAccounts', parameters('automationAccountName'))]",
     "targetScope": "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('targetResourceGroupName'))]",
     "policyAssignmentId": "[parameters('policyAssignmentId')]",
     "automationDeploymentName": "[concat('kv-cert-account-', uniqueString(variables('automationAccountId')))]",
+    "automationDeploymentId": "[extensionResourceId(variables('automationResourceGroupId'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]",
     "scheduleDeploymentName": "[concat('kv-cert-schedule-', uniqueString(variables('automationAccountId')))]",
     "policyContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '36243c78-bf99-498c-9df9-86d9f8d28608')]",
     "readerRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]"
@@ -127,9 +129,9 @@
       "apiVersion": "2022-04-01",
       "name": "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]",
       "scope": "[variables('targetScope')]",
-      "dependsOn": [ "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]" ],
+      "dependsOn": [ "[variables('automationDeploymentId')]" ],
       "properties": {
-        "principalId": "[reference(resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName')), '2022-09-01').outputs.principalId.value]",
+        "principalId": "[reference(variables('automationDeploymentId'), '2022-09-01').outputs.principalId.value]",
         "principalType": "ServicePrincipal",
         "roleDefinitionId": "[variables('policyContributorRoleId')]"
       }
@@ -139,9 +141,9 @@
       "apiVersion": "2022-04-01",
       "name": "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]",
       "scope": "[variables('policyAssignmentId')]",
-      "dependsOn": [ "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]" ],
+      "dependsOn": [ "[variables('automationDeploymentId')]" ],
       "properties": {
-        "principalId": "[reference(resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName')), '2022-09-01').outputs.principalId.value]",
+        "principalId": "[reference(variables('automationDeploymentId'), '2022-09-01').outputs.principalId.value]",
         "principalType": "ServicePrincipal",
         "roleDefinitionId": "[variables('readerRoleId')]"
       }
@@ -152,7 +154,7 @@
       "name": "[variables('scheduleDeploymentName')]",
       "resourceGroup": "[parameters('automationResourceGroupName')]",
       "dependsOn": [
-        "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]",
+        "[variables('automationDeploymentId')]",
         "[extensionResourceId(variables('targetScope'), 'Microsoft.Authorization/roleAssignments', guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId')))]",
         "[extensionResourceId(variables('policyAssignmentId'), 'Microsoft.Authorization/roleAssignments', guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId')))]"
       ],
