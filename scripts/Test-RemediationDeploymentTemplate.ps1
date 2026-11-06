@@ -51,9 +51,14 @@ Assert-True ($template.parameters.runbookContentUri.defaultValue -ceq $sourceUri
 Assert-True ($accountDeployment.properties.parameters.runbookContentUri.value -ceq "[parameters('runbookContentUri')]" -and $runbook.properties.publishContentLink.uri -ceq "[parameters('runbookContentUri')]") 'Pass source URL through to published content, not draft content.'
 Assert-True (Test-Path (Join-Path $PSScriptRoot 'Invoke-KvCertRemediation.ps1')) 'The source runbook must exist locally.'
 
-Assert-True (($template.parameters.policyAssignmentScope.allowedValues -join ',') -ceq 'ResourceGroup,Subscription') 'Support only assignment scopes accepted by the runbook.'
-$expectedAssignmentId = "[if(equals(parameters('policyAssignmentScope'), 'Subscription'), subscriptionResourceId('Microsoft.Authorization/policyAssignments', parameters('policyAssignmentName')), resourceId(parameters('targetResourceGroupName'), 'Microsoft.Authorization/policyAssignments', parameters('policyAssignmentName')))]"
-Assert-True ($template.variables.policyAssignmentId -ceq $expectedAssignmentId) 'Build the assignment ID in the selected subscription and target group.'
+$assignmentInput = $template.parameters.policyAssignmentId
+Assert-True ($assignmentInput.type -ceq 'string' -and $assignmentInput.minLength -eq 1) 'Require a non-empty full assignment resource ID.'
+Assert-True (-not $assignmentInput.PSObject.Properties['maxLength']) 'Full assignment resource IDs must not have a 64-character limit.'
+Assert-True (-not $assignmentInput.PSObject.Properties['allowedValues'] -and -not $assignmentInput.PSObject.Properties['defaultValue']) 'Assignment ID must be a required free-text resource ID, not a scope selector.'
+Assert-True (-not $template.parameters.PSObject.Properties['policyAssignmentName']) 'Remove the separate assignment-name parameter.'
+Assert-True (-not $template.parameters.PSObject.Properties['policyAssignmentScope']) 'Remove the separate scope selector.'
+Assert-True ($template.variables.policyAssignmentId -ceq "[parameters('policyAssignmentId')]") 'Pass the full assignment resource ID through unchanged to scoped RBAC, schedule parameters, and outputs.'
+Assert-True ($template.outputs.policyAssignmentId.value -ceq "[variables('policyAssignmentId')]") 'Output the full supplied assignment ID.'
 Assert-True ($template.variables.targetScope -ceq "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('targetResourceGroupName'))]") 'Target role must be scoped to the selected resource group.'
 Assert-True ($template.variables.policyContributorRoleId -ceq "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '36243c78-bf99-498c-9df9-86d9f8d28608')]") 'Grant Resource Policy Contributor, matching the script.'
 Assert-True ($template.variables.readerRoleId -ceq "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]") 'Grant Reader, matching the script.'
