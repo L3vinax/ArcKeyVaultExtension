@@ -1,0 +1,223 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "automationResourceGroupName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": { "description": "Existing resource group in the selected subscription for the Automation account." }
+    },
+    "automationAccountName": {
+      "type": "string",
+      "minLength": 6,
+      "maxLength": 50,
+      "metadata": { "description": "Name of a NEW, dedicated Automation account. Do not reuse an account deployed for another assignment or target group." }
+    },
+    "automationLocation": {
+      "type": "string",
+      "metadata": {
+        "description": "Azure region supporting Azure Automation, for example eastus. This is separate from the subscription deployment metadata location.",
+        "strongType": "location"
+      }
+    },
+    "targetResourceGroupName": {
+      "type": "string",
+      "minLength": 1,
+      "metadata": { "description": "Existing resource group containing the Arc machines, in the selected subscription." }
+    },
+    "policyAssignmentScope": {
+      "type": "string",
+      "defaultValue": "ResourceGroup",
+      "allowedValues": [ "ResourceGroup", "Subscription" ],
+      "metadata": { "description": "Scope of the existing standalone DeployIfNotExists assignment. ResourceGroup means the target resource group." }
+    },
+    "policyAssignmentName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "metadata": { "description": "Resource name (last segment of the assignment ID), NOT its display name or policy definition name." }
+    },
+    "runbookContentUri": {
+      "type": "string",
+      "defaultValue": "https://raw.githubusercontent.com/L3vinax/ArcKeyVaultExtension/main/scripts/Invoke-KvCertRemediation.ps1",
+      "metadata": { "description": "Public HTTPS URL of the trusted runbook source. Use your fork's URL if needed, or a commit-pinned URL for reproducible deployments." }
+    }
+  },
+  "variables": {
+    "automationAccountId": "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Automation/automationAccounts', parameters('automationAccountName'))]",
+    "targetScope": "[subscriptionResourceId('Microsoft.Resources/resourceGroups', parameters('targetResourceGroupName'))]",
+    "policyAssignmentId": "[if(equals(parameters('policyAssignmentScope'), 'Subscription'), subscriptionResourceId('Microsoft.Authorization/policyAssignments', parameters('policyAssignmentName')), resourceId(parameters('targetResourceGroupName'), 'Microsoft.Authorization/policyAssignments', parameters('policyAssignmentName')))]",
+    "automationDeploymentName": "[concat('kv-cert-account-', uniqueString(variables('automationAccountId')))]",
+    "scheduleDeploymentName": "[concat('kv-cert-schedule-', uniqueString(variables('automationAccountId')))]",
+    "policyContributorRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '36243c78-bf99-498c-9df9-86d9f8d28608')]",
+    "readerRoleId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'acdd72a7-3385-48ef-bd42-f606fba81ae7')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('automationDeploymentName')]",
+      "resourceGroup": "[parameters('automationResourceGroupName')]",
+      "properties": {
+        "mode": "Incremental",
+        "expressionEvaluationOptions": { "scope": "inner" },
+        "parameters": {
+          "accountName": { "value": "[parameters('automationAccountName')]" },
+          "location": { "value": "[parameters('automationLocation')]" },
+          "runbookContentUri": { "value": "[parameters('runbookContentUri')]" }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "accountName": { "type": "string" },
+            "location": { "type": "string" },
+            "runbookContentUri": { "type": "string" }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Automation/automationAccounts",
+              "apiVersion": "2023-11-01",
+              "name": "[parameters('accountName')]",
+              "location": "[parameters('location')]",
+              "identity": { "type": "SystemAssigned" },
+              "properties": { "sku": { "name": "Basic" } }
+            },
+            {
+              "type": "Microsoft.Automation/automationAccounts/runtimeEnvironments",
+              "apiVersion": "2024-10-23",
+              "name": "[concat(parameters('accountName'), '/KvCertRemediation-PowerShell74')]",
+              "location": "[parameters('location')]",
+              "dependsOn": [ "[resourceId('Microsoft.Automation/automationAccounts', parameters('accountName'))]" ],
+              "properties": {
+                "description": "PowerShell 7.4 environment dedicated to certificate policy remediation.",
+                "runtime": { "language": "PowerShell", "version": "7.4" }
+              }
+            },
+            {
+              "type": "Microsoft.Automation/automationAccounts/runtimeEnvironments/packages",
+              "apiVersion": "2024-10-23",
+              "name": "[concat(parameters('accountName'), '/KvCertRemediation-PowerShell74/Az.Accounts')]",
+              "location": "[parameters('location')]",
+              "dependsOn": [ "[resourceId('Microsoft.Automation/automationAccounts/runtimeEnvironments', parameters('accountName'), 'KvCertRemediation-PowerShell74')]" ],
+              "properties": {
+                "contentLink": { "uri": "https://www.powershellgallery.com/api/v2/package/Az.Accounts/5.3.3" }
+              }
+            },
+            {
+              "type": "Microsoft.Automation/automationAccounts/runbooks",
+              "apiVersion": "2024-10-23",
+              "name": "[concat(parameters('accountName'), '/Invoke-KvCertRemediation')]",
+              "location": "[parameters('location')]",
+              "dependsOn": [ "[resourceId('Microsoft.Automation/automationAccounts/runtimeEnvironments/packages', parameters('accountName'), 'KvCertRemediation-PowerShell74', 'Az.Accounts')]" ],
+              "properties": {
+                "runbookType": "PowerShell",
+                "runtimeEnvironment": "KvCertRemediation-PowerShell74",
+                "description": "Remediates the existing certificate policy assignment with ReEvaluateCompliance using managed identity.",
+                "logProgress": true,
+                "logVerbose": false,
+                "publishContentLink": { "uri": "[parameters('runbookContentUri')]" }
+              }
+            }
+          ],
+          "outputs": {
+            "principalId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Automation/automationAccounts', parameters('accountName')), '2023-11-01', 'Full').identity.principalId]"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId'))]",
+      "scope": "[variables('targetScope')]",
+      "dependsOn": [ "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]" ],
+      "properties": {
+        "principalId": "[reference(resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName')), '2022-09-01').outputs.principalId.value]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('policyContributorRoleId')]"
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId'))]",
+      "scope": "[variables('policyAssignmentId')]",
+      "dependsOn": [ "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]" ],
+      "properties": {
+        "principalId": "[reference(resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName')), '2022-09-01').outputs.principalId.value]",
+        "principalType": "ServicePrincipal",
+        "roleDefinitionId": "[variables('readerRoleId')]"
+      }
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2022-09-01",
+      "name": "[variables('scheduleDeploymentName')]",
+      "resourceGroup": "[parameters('automationResourceGroupName')]",
+      "dependsOn": [
+        "[resourceId(parameters('automationResourceGroupName'), 'Microsoft.Resources/deployments', variables('automationDeploymentName'))]",
+        "[extensionResourceId(variables('targetScope'), 'Microsoft.Authorization/roleAssignments', guid(variables('targetScope'), variables('automationAccountId'), variables('policyContributorRoleId')))]",
+        "[extensionResourceId(variables('policyAssignmentId'), 'Microsoft.Authorization/roleAssignments', guid(variables('policyAssignmentId'), variables('automationAccountId'), variables('readerRoleId')))]"
+      ],
+      "properties": {
+        "mode": "Incremental",
+        "expressionEvaluationOptions": { "scope": "inner" },
+        "parameters": {
+          "accountName": { "value": "[parameters('automationAccountName')]" },
+          "subscriptionId": { "value": "[subscription().subscriptionId]" },
+          "targetResourceGroupName": { "value": "[parameters('targetResourceGroupName')]" },
+          "policyAssignmentId": { "value": "[variables('policyAssignmentId')]" }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "accountName": { "type": "string" },
+            "subscriptionId": { "type": "string" },
+            "targetResourceGroupName": { "type": "string" },
+            "policyAssignmentId": { "type": "string" },
+            "scheduleStartTime": { "type": "string", "defaultValue": "[dateTimeAdd(utcNow(), 'PT10M')]" }
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Automation/automationAccounts/schedules",
+              "apiVersion": "2023-11-01",
+              "name": "[concat(parameters('accountName'), '/KvCertRemediation-Hourly')]",
+              "properties": {
+                "description": "Hourly fresh compliance discovery and remediation for one assignment and target resource group.",
+                "frequency": "Hour",
+                "interval": 1,
+                "startTime": "[parameters('scheduleStartTime')]",
+                "timeZone": "UTC"
+              }
+            },
+            {
+              "type": "Microsoft.Automation/automationAccounts/jobSchedules",
+              "apiVersion": "2023-11-01",
+              "name": "[concat(parameters('accountName'), '/', guid(resourceId('Microsoft.Automation/automationAccounts', parameters('accountName')), 'Invoke-KvCertRemediation', 'KvCertRemediation-Hourly'))]",
+              "dependsOn": [ "[resourceId('Microsoft.Automation/automationAccounts/schedules', parameters('accountName'), 'KvCertRemediation-Hourly')]" ],
+              "properties": {
+                "runbook": { "name": "Invoke-KvCertRemediation" },
+                "schedule": { "name": "KvCertRemediation-Hourly" },
+                "parameters": {
+                  "SubscriptionId": "[parameters('subscriptionId')]",
+                  "ResourceGroupName": "[parameters('targetResourceGroupName')]",
+                  "PolicyAssignmentId": "[parameters('policyAssignmentId')]"
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "automationAccountId": { "type": "string", "value": "[variables('automationAccountId')]" },
+    "policyAssignmentId": { "type": "string", "value": "[variables('policyAssignmentId')]" },
+    "targetScope": { "type": "string", "value": "[variables('targetScope')]" }
+  }
+}

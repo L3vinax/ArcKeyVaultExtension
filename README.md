@@ -19,10 +19,15 @@ Azure Policy (`DeployIfNotExists`) that installs the **KeyVaultForWindows** exte
 | Path | Purpose |
 |---|---|
 | `azuredeploy.json` | Subscription-level ARM template for the Deploy to Azure button |
+| `azuredeploy-remediation.json` | Separate subscription-level ARM template for hourly Automation remediation |
 | `policy/keyvault-extension.rules.json` | Policy rule and embedded deployment template |
 | `policy/keyvault-extension.params.json` | Policy parameters (`effect`, `vaultName`, `tagName`, `pollingIntervalInS`) |
 | `scripts/Set-KvCertTags.ps1` | Bulk-set the tag from a CSV |
+| `scripts/Deploy-KvCertRemediationAutomation.ps1` | Deploy an optional hourly Automation account, runbook, identity, permissions, and schedule |
+| `scripts/Invoke-KvCertRemediation.ps1` | Managed-identity runbook that remediates one assignment in a resource group |
 | `scripts/Test-DeploymentTemplate.ps1` | Check deployment isolation and parity with the standalone policy |
+| `scripts/Test-KvCertRemediation.ps1` | Isolated runbook and automation deployment regression tests (no Azure login needed) |
+| `scripts/Test-RemediationDeploymentTemplate.ps1` | Check Automation button isolation, permissions, runbook source, and schedule wiring |
 | `scripts/machines.sample.csv` | Example CSV |
 
 ## Prerequisites
@@ -77,7 +82,7 @@ az policy remediation create --name kv-ext-remediate --policy-assignment kv-ext-
 
 Change the machine's certificate tag to the new comma-separated prefix list. The policy compares it with the extension's `properties.forceUpdateTag` and updates the existing extension when they differ. This property is an extension handler update marker, not an Azure resource tag. An unchanged value remains compliant.
 
-For qualifying resource create/update requests, `DeployIfNotExists` evaluates after the default 10-minute delay; updates are not immediate. Tag-only PATCH requests are eligible because this policy inspects tags. Verify the actual update path used by your tooling, including `Set-KvCertTags.ps1`, in a non-production environment.
+For qualifying resource create/update requests, `DeployIfNotExists` evaluates after the default 10-minute delay; updates are not immediate. Do not assume all tag edits trigger deployment. The Azure portal Tags page can use `Microsoft.Resources/tags/write`; in testing, this path did not automatically update the extension, but explicit remediation succeeded without uninstalling it. The bulk-tag script also uses the separate tags API (`Update-AzTag`). Use explicit or scheduled remediation for these workflows.
 
 After upgrading an existing policy definition, run remediation once to stamp existing extensions. Compliance scans (scheduled or manually triggered) only report non-compliance; they do not redeploy existing resources automatically. To repair those resources without deleting the extension, create a remediation task with fresh discovery:
 
@@ -88,9 +93,89 @@ az policy remediation create --name kv-ext-tag-update --policy-assignment kv-ext
 
 Use a new remediation task name for subsequent runs. With `AuditIfNotExists`, changes are reported but not deployed.
 
+The policy definition name, assignment name, and assignment display name can differ. Use the **full assignment resource ID** from Azure Policy > Assignments (or the assignment linked from a successful remediation task), rather than assuming the example assignment name matches your environment.
+
 Removing the machine's tag makes it out of scope; it does not uninstall the extension or remove installed certificates. Removing a prefix stops observing that secret after the extension update, but does not guarantee removal of certificates already installed. This check tracks the raw certificate tag value, not arbitrary extension-settings drift or changes to assignment parameters such as `vaultName` and `pollingIntervalInS`.
 
 Before production use, verify in Azure that a changed tag redeploys the extension with the new `observedCertificates`, the applied marker matches the tag, and an unchanged tag remains compliant. Also verify migration from an extension without a marker and that machines without the tag remain out of scope.
+
+## Optional hourly remediation
+
+Both Automation deployment methods configure a **dedicated Automation account** with a system-assigned identity, a **PowerShell 7.4 runtime environment** named `KvCertRemediation-PowerShell74`, an attached `Az.Accounts` package (minimum 5.3.3), a published runbook explicitly linked to that environment, and an hourly UTC schedule. Az.Accounts is attached to the named runtime environment, not imported into the account's legacy Modules collection. The original Deploy to Azure button remains policy-definition-only.
+
+Each run creates a uniquely named remediation task with `ReEvaluateCompliance`, so it does not wait for the approximately daily policy compliance scan. Only non-compliant resources eligible for the assignment are deployed. A changed tag should be discovered on the next hourly run, plus Azure evaluation, deployment, and certificate installation time; this is not an exact one-hour installation guarantee.
+
+### Prerequisites and deployment
+
+- An existing standalone certificate policy assignment at the target resource group or subscription, with effect `DeployIfNotExists` and a managed identity authorized to deploy the Arc extension. Initiative and management-group assignments are not supported by this script.
+- Both the Automation resource group and target resource group already exist in the same subscription. Use a separate account for each assignment/target-group pair; do not attach additional schedules or start concurrent manual jobs for this runbook.
+- The deploying user needs Automation resource management permissions in the Automation resource group, permission to read the assignment, and permission to create role assignments at the target resource group and the policy assignment resource (for example, Owner, or Contributor plus Role Based Access Control Administrator at the relevant scopes).
+- For script deployment only, install `Az.Accounts`, `Az.Automation`, and `Az.Resources` on the workstation. Only `Az.Accounts` is needed inside Automation; both deployment methods attach version 5.3.3 to the PowerShell 7.4 runtime environment. The script reuses a successfully imported package at version 5.3.3 or later.
+
+### Deploy Automation through the Azure portal
+
+[![Deploy hourly remediation to Azure](https://aka.ms/deploytoazurebutton)](https://portal.azure.com/#create/Microsoft.Template/uri/https%3A%2F%2Fraw.githubusercontent.com%2FL3vinax%2FArcKeyVaultExtension%2Fmain%2Fazuredeploy-remediation.json)
+
+This is a **separate deployment** from the policy-definition button above. It creates the Automation account, system-assigned identity, PowerShell 7.4 runtime environment with an attached Az.Accounts package, published runbook linked to that environment, scoped role assignments, and hourly schedule. It does **not** create resource groups, a policy definition or assignment, Key Vault access, or certificates.
+
+1. First create the certificate policy assignment with `DeployIfNotExists` and its authorized managed identity. Confirm the assignment is standalone and scoped to the target resource group or subscription.
+2. Select **Deploy hourly remediation to Azure**, choose the subscription containing both existing resource groups, and select a deployment metadata location.
+3. Enter the **Automation Resource Group Name**, a **new, dedicated Automation Account Name**, and an **Automation Location** that supports Azure Automation.
+4. Enter the **Target Resource Group Name** containing the Arc machines. Select **ResourceGroup** or **Subscription** for **Policy Assignment Scope**, matching the existing assignment.
+5. Enter **Policy Assignment Name** using the last segment of the actual assignment resource ID, not the definition name or display name. The template constructs the full ID in the selected subscription; a resource-group assignment must belong to the target group.
+6. Leave **Runbook Content Uri** at its default for this repository, or use a trusted public HTTPS URL from your fork or a pinned commit. This code runs with the Automation identity's permissions; review alternative sources before deploying.
+7. Select **Review + create** and **Create**. Runtime package import can take several minutes. The hourly schedule is created after the account/runtime/package/runbook deployment and both role grants complete, with its first start approximately 10 minutes later.
+8. Check the deployment outputs for the account, assignment, and target IDs. In Automation > Runtime environments > `KvCertRemediation-PowerShell74`, verify the language/version is **PowerShell 7.4** and the attached **Az.Accounts** package shows **Succeeded** at version **5.3.3**. Verify the runbook is **Published** and linked to this runtime environment, the schedule is enabled and linked with the correct parameters, and the first scheduled job succeeds.
+
+In addition to the scoped resource/role permissions above, portal deployment requires `Microsoft.Resources/deployments/*` at the subscription and Automation resource group. The Reader grant is limited to the assignment resource, not the entire subscription. The template cannot perform the deployment script's assignment/effect/identity preflight checks, so verify those prerequisites before deploying.
+
+Use this button for **initial deployment to a new account**. ARM does not perform the script's conflicting-schedule checks; do not reuse it to retarget an existing account. For safe repeat deployments and local runbook updates, use the script below with the same assignment and target group. It preserves the existing schedule and detects conflicting parameters.
+
+The button works only after `azuredeploy-remediation.json` **and** `scripts/Invoke-KvCertRemediation.ps1` are publicly published on `main`. The existing policy-definition button is unchanged. For a fork, update both the button's template URL and the runbook source URL. Publishing source changes does not update already-deployed runbooks; redeploy them using the script.
+
+### Deploy or update Automation with PowerShell
+
+```powershell
+Install-Module Az.Accounts, Az.Automation, Az.Resources -Scope CurrentUser
+Connect-AzAccount
+
+.\scripts\Deploy-KvCertRemediationAutomation.ps1 `
+  -SubscriptionId '<subscription-guid>' `
+  -AutomationResourceGroupName '<automation-rg>' `
+  -AutomationAccountName '<unique-automation-account-name>' `
+  -Location '<azure-region>' `
+  -TargetResourceGroupName 'rg-arc-01' `
+  -PolicyAssignmentId '/subscriptions/<subscription-guid>/providers/Microsoft.Authorization/policyAssignments/<actual-assignment-name>'
+```
+
+For a resource-group assignment, its ID includes `/resourceGroups/<rg>` before `/providers/Microsoft.Authorization/policyAssignments/`. The script validates the assignment scope, refuses initiative assignments and explicitly non-deploying effects, and does not create or change the policy assignment.
+
+The Automation identity receives **Resource Policy Contributor** at the target resource group and **Reader** at the supplied assignment resource. Resource Policy Contributor is a built-in convenience role with broader policy-management permissions than this runbook needs; use a dedicated account. The **policy assignment's identity**, not the Automation identity, still performs extension deployments. No Key Vault access is granted to the Automation identity.
+
+The script uses the ARM RBAC REST API to list and create these grants. Some `Az.Resources` versions reject subscription-level policy assignment resource IDs as `Get-AzRoleAssignment`/`New-AzRoleAssignment` scopes. This does not make the policy assignment ID invalid, and the script does not work around it by granting subscription-wide Reader access. If an older copy fails with "Scope ... should begin with ... /resourceGroups", use the updated deployment script and rerun with the same full assignment ID and inputs; it reuses the account and existing grants.
+
+A new schedule starts about 10 minutes after deployment and repeats every hour in UTC. Allow time for new role assignments to propagate. Rerunning with the same inputs republishes the local runbook without duplicating the schedule link or role assignments. An existing account must already have a system-assigned identity. A conflicting target or an invalid/disabled existing schedule fails explicitly instead of silently retargeting it.
+
+The script uses the Automation REST API `2024-10-23` to configure the named PowerShell 7.4 runtime and its attached Az.Accounts package. It waits up to 20 minutes for package import, rejects failed or malformed import responses, imports the local runbook as a draft, explicitly binds the draft to the runtime, and only then publishes it. Rerunning with the same inputs also migrates a runbook deployed by the earlier PowerShell 5.1 script to the new runtime without changing its schedule or remediation scope. Legacy account modules are left untouched. Use the account's existing region for `Location` when updating.
+
+### Monitoring and verification
+
+- In Automation > Runbooks > `Invoke-KvCertRemediation` > Jobs, inspect output and errors. Each run logs the remediation name and waits up to 45 minutes for it to finish. Failed/canceled remediation or failed deployments fail the job, including partial deployment failures.
+- If remediation is already active for this assignment in the target resource group, the next job logs a skip rather than creating another task. This is an active-task check, not a distributed lock; keep one schedule and avoid concurrent manual starts. Paginated remediation listings are followed.
+- A timeout fails the job but does **not** cancel the Azure remediation; subsequent jobs skip while that task remains active. Inspect long-running tasks in Azure Policy. Previous failed tasks are warned about before a new retry.
+- Set up Azure Monitor alerts for failed/suspended Automation jobs and inspect Azure Policy > Remediation > Deployments for the underlying deployment errors. Alerts are not created by this script.
+- For an end-to-end test, add an existing accessible secret prefix to a machine's tag, wait for a scheduled job, and verify its task succeeds, the extension's `forceUpdateTag` and `observedCertificates` match, and the certificate appears in `Cert:\LocalMachine\My`. Then leave the tag unchanged and verify the next remediation has no unnecessary extension deployments.
+- Disable the `KvCertRemediation-Hourly` schedule to stop automatic remediation. Existing tasks continue; disabling the schedule does not remove extensions or certificates. Automation job runtime and Azure operations can incur charges.
+
+Run the local regression checks after automation or policy changes:
+
+```powershell
+.\scripts\Test-KvCertRemediation.ps1
+.\scripts\Test-DeploymentTemplate.ps1
+.\scripts\Test-RemediationDeploymentTemplate.ps1
+```
+
+The automation tests replace Azure commands with local mocks. They validate request payloads, PowerShell 7.4 runtime creation, attached package readiness/failures, binding before publication, scheduling, repeat deployment, overlap handling, pagination, and failure reporting. The Automation template test checks deployment isolation, scoped roles, the runtime version and attached package, the published runbook source/binding, and schedule dependencies/parameters. These local checks do not validate Azure RBAC propagation or service-side deployment. Complete the end-to-end scheduled-job test above before production use.
 
 ## Notes
 
